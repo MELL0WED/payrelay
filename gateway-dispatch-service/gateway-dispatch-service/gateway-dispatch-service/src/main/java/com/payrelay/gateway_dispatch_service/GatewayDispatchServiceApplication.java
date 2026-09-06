@@ -7,7 +7,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class GatewayDispatchServiceApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(GatewayDispatchServiceApplication.class, args);
+        System.setProperty("user.timezone", "UTC");
+        SpringApplication.run(GatewayDispatchServiceApplication.class, args);
 	}
 
 }
