@@ -32,16 +32,15 @@ public class PaymentEventConsumer {
         this.redisTemplate = redisTemplate;
     }
 
-    @KafkaListener(topics = "payment-created", groupId = "gateway-dispatch", containerFactory = "kafkaListenerContainerFactory")
-    public void handle(String eventJson) {
-        System.out.println("RAW MESSAGE RECEIVED: " + eventJson);
-        Long paymentId = extract(PAYMENT_ID_PATTERN, eventJson).map(Long::parseLong).orElse(null);
-        String idempotencyKey = extract(IDEMPOTENCY_KEY_PATTERN, eventJson).orElse(null);
+        @KafkaListener(topics = "payment-created", groupId = "gateway-dispatch", containerFactory = "kafkaListenerContainerFactory")
+        public void handle(String eventJson) {
+            Long paymentId = extract(PAYMENT_ID_PATTERN, eventJson).map(Long::parseLong).orElse(null);
+            String idempotencyKey = extract(IDEMPOTENCY_KEY_PATTERN, eventJson).orElse(null);
 
-        if (paymentId == null || idempotencyKey == null) {
-            System.err.println("GATEWAY-DISPATCH: could not parse event: " + eventJson);
-            return;
-        }
+            if (paymentId == null || idempotencyKey == null) {
+                System.err.println("GATEWAY-DISPATCH: could not parse event: " + eventJson);
+                return;
+            }
 
         String statusKey = "dispatch:status:" + idempotencyKey;
         String existingStatus = redisTemplate.opsForValue().get(statusKey);
@@ -50,29 +49,28 @@ public class PaymentEventConsumer {
             return;
         }
 
-        String retryCountKey = "dispatch:retries:" + idempotencyKey;
-        Long currentRetry = redisTemplate.opsForValue().increment(retryCountKey);
-        if (currentRetry != null && currentRetry == 1L) {
-            redisTemplate.expire(retryCountKey, Duration.ofHours(1));
+            String retryCountKey = "dispatch:retries:" + idempotencyKey;
+            Long currentRetry = redisTemplate.opsForValue().increment(retryCountKey);
+            if (currentRetry != null && currentRetry == 1L) {
+                redisTemplate.expire(retryCountKey, Duration.ofHours(1));
+            }
+
+            if (currentRetry != null && currentRetry > MAX_RETRIES) {
+                recordAttempt(paymentId, idempotencyKey, "DEAD_LETTER");
+                System.out.println("GATEWAY-DISPATCH: idempotencyKey=" + idempotencyKey + " exceeded max retries, moved to DEAD_LETTER");
+                return;
+            }
+
+            String outcome = gatewaySimulator.call(idempotencyKey);
+            recordAttempt(paymentId, idempotencyKey, outcome);
+
+             if ("SUCCESS".equals(outcome)) {
+                redisTemplate.opsForValue().set(statusKey, "SUCCESS", Duration.ofHours(1));
+             }
+
+            System.out.println("GATEWAY-DISPATCH: paymentId=" + paymentId + " idempotencyKey=" + idempotencyKey
+                    + " attempt=" + currentRetry + " outcome=" + outcome);
         }
-
-        if (currentRetry != null && currentRetry > MAX_RETRIES) {
-            recordAttempt(paymentId, idempotencyKey, "DEAD_LETTER");
-            redisTemplate.opsForValue().set(statusKey, "DEAD_LETTER", Duration.ofHours(1));
-            System.out.println("GATEWAY-DISPATCH: idempotencyKey=" + idempotencyKey + " exceeded max retries, moved to DEAD_LETTER");
-            return;
-        }
-
-        String outcome = gatewaySimulator.call(idempotencyKey);
-        recordAttempt(paymentId, idempotencyKey, outcome);
-
-        if ("SUCCESS".equals(outcome)) {
-            redisTemplate.opsForValue().set(statusKey, "SUCCESS", Duration.ofHours(1));
-        }
-
-        System.out.println("GATEWAY-DISPATCH: paymentId=" + paymentId + " idempotencyKey=" + idempotencyKey
-                + " attempt=" + currentRetry + " outcome=" + outcome);
-    }
 
     private void recordAttempt(Long paymentId, String idempotencyKey, String outcome) {
         dispatchAttemptRepository.save(new DispatchAttempt(null, paymentId, idempotencyKey, outcome, Instant.now()));
